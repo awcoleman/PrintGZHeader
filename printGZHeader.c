@@ -8,7 +8,7 @@
 * http://www.zlib.net/manual.html
 * https://www.ietf.org/rfc/rfc1952.txt
 *
-* initial author awcoleman, last update 20150106 awcoleman
+* initial author awcoleman, last update 20150110 awcoleman
 *
 * Copyright 2015 awcoleman
 *
@@ -34,15 +34,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* input buffer size, output buffer is 10* input */
-#define BUF_SIZE 4096
+/* mutliplier for output buffer size (outbug size = MULT_OUTBUF * input_size) */
+#define OUTBUF_MULT 5
 /* size of strings such as comments and original filename */
 #define STR_LEN 512
 
-int get_header_for_zstream(FILE *f, char* inname, int member_number) {
+int get_header_for_zstream(FILE *f, char* inname, int member_number,long filesize) {
 
         int err;
-        char inbuf[BUF_SIZE], outbuf[10*BUF_SIZE];
+        char *inbuf, *outbuf;
 
 	gz_header zhead;
 	z_stream zs;
@@ -53,6 +53,10 @@ int get_header_for_zstream(FILE *f, char* inname, int member_number) {
 	time_t mtime;
 
 	int fposreset=0;
+
+	/* init */
+	inbuf = malloc(filesize * sizeof(char));
+	outbuf = malloc(OUTBUF_MULT*filesize * sizeof(char));
 
 	/* zlib will change to default allocators, etc */
 	zs.zalloc = Z_NULL;
@@ -65,7 +69,7 @@ int get_header_for_zstream(FILE *f, char* inname, int member_number) {
 
 	/* Set output buffer */
 	zs.next_out = outbuf;
-	zs.avail_out = 10*BUF_SIZE;
+	zs.avail_out = OUTBUF_MULT*filesize;
 
 	/* initialize zlib, only accept gz streams */
 	ret = inflateInit2(&zs, 16+MAX_WBITS);
@@ -89,7 +93,7 @@ int get_header_for_zstream(FILE *f, char* inname, int member_number) {
 	zhead.name=(Bytef*) &zname;
 
 	/* Read some of the gz file so zlib can get the header */
-        zs.avail_in = fread(inbuf, 1, BUF_SIZE, f);
+        zs.avail_in = fread(inbuf, 1, filesize, f);
         if (ferror(f)) {
             ret = Z_ERRNO;
 	    fprintf(stderr, "ERROR: Error reading file %s\n", inname);
@@ -109,7 +113,7 @@ int get_header_for_zstream(FILE *f, char* inname, int member_number) {
 	}
 
 	/* file position has moved to past header */
-	fposreset = BUF_SIZE - zs.avail_in;
+	fposreset = filesize - zs.avail_in;
 
 	/* zhead should be populated now */
 
@@ -145,7 +149,7 @@ int get_header_for_zstream(FILE *f, char* inname, int member_number) {
 			fprintf(stderr, "inflate returned error: %d, msg: %s\n",ret,zs.msg);
 			exit(ret);
 		}
-		zs.avail_in = fread(inbuf, 1, BUF_SIZE, f);
+		zs.avail_in = fread(inbuf, 1, filesize, f);
 		if (ferror(f)) {
 	    		fprintf(stderr, "ERROR: Error reading file %s\n", inname);
 	    		exit(Z_ERRNO);
@@ -154,12 +158,18 @@ int get_header_for_zstream(FILE *f, char* inname, int member_number) {
 			break;
 		zs.next_in = inbuf;
 
+		/* reset outbuf since we don't care about its contents */
+		zs.next_out = outbuf;
+		zs.avail_out = OUTBUF_MULT*filesize;
+
 	} while (ret != Z_STREAM_END);
 
         printf("Decompressed size of member is: %d\n",zs.total_out);
 
 	/* clean up */
 	(void)inflateEnd(&zs);
+	free(inbuf);
+	free(outbuf);
 	fposreset=zs.total_in;
 
         return fposreset;
@@ -169,7 +179,6 @@ int main(int argc, char **argv) {
 
         FILE *f;
         int err;
-        char inbuf[BUF_SIZE], outbuf[BUF_SIZE];
 
 	char *inname;
 
@@ -204,7 +213,7 @@ int main(int argc, char **argv) {
 		fposa = ftell(f);
         	printf("----------------\n");
         	printf("Byte position (0-based) of beginning of member %d is %d.\n",loopctr, ftell(f));
-		ret = get_header_for_zstream(f, inname, loopctr);
+		ret = get_header_for_zstream(f, inname, loopctr, filesize);
 		fseek(f,(fposa+ret),SEEK_SET);
 		fposb = ftell(f);
         	printf("Byte position (0-based) of end of member %d is %d.\n",loopctr, (ftell(f)-1));
